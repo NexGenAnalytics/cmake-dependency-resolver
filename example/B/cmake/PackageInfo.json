@@ -1,0 +1,21 @@
+{
+    "name": "B",
+    "components": [
+        {
+            "name": "Core",
+            "optional": false
+        },
+        {
+            "name": "Ext",
+            "optional": true,
+            "dependencies": [
+                {
+                    "name": "external",
+                    "optional": false,
+                    "source_dir": "../external"
+                }
+            ]
+        }
+    ],
+    "dependencies": []
+}

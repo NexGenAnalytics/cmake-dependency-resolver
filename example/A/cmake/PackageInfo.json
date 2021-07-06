@@ -1,0 +1,23 @@
+{
+    "name": "A",
+    "components": [
+        {
+            "name": "Ext",
+            "optional": true,
+            "dependencies": [
+                {
+                    "name": "Y",
+                    "optional": false,
+                    "source_dir": "../Y"
+                }
+            ]
+        }
+    ],
+    "dependencies": [
+        {
+            "name": "X",
+            "optional": true,
+            "source_dir": "../X"
+        }
+    ]
+}

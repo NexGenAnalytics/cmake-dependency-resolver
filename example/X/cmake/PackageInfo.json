@@ -1,0 +1,11 @@
+{
+    "name": "X",
+    "components": [],
+    "dependencies": [
+        {
+            "name": "B",
+            "source_dir": "../B",
+            "components_required": ["Core"]
+        }
+    ]
+}

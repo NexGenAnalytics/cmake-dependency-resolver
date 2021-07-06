@@ -1,0 +1,32 @@
+@startuml
+scale 1
+skinparam roundcorner 15
+
+rectangle "<b>TPL</b>" as external #aaffff {
+}
+
+rectangle B {
+  rectangle Core as B_Core
+  rectangle "     Ext\n(optional)" as B_Ext #aaffaa
+}
+
+rectangle "<b>X</b>" as X {
+}
+
+rectangle "<b>Y</b>" as Y {
+}
+
+rectangle  A {
+  rectangle  "                  Ext\n(optional: <i>A_ENABLE_Ext</i>)" as A_Ext #aaffaa
+}
+
+circle " " as start #000000
+
+external <-- B_Ext
+B_Core <-- X
+B_Ext <.. Y #000000 : (optional: <i>Y_ENABLE_BExt</i>)
+X <.. A #000000 : (optional: <i>A_ENABLE_X</i>)
+Y <-- A_Ext
+A <-- start #000000 : main package
+'
+@enduml

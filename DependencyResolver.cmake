@@ -2,52 +2,82 @@
 
 function(add_and_resolve_package_dependencies BIN_DIR)
 
-# Only run once - for "main" package
+  # Only run once - for the main/starting package
   # TODO: Don't require top-level source folder, set something in cache instead:
   #       DependencyResolver package(s) can be included by non-DR packages.
   if(NOT ${CMAKE_CURRENT_SOURCE_DIR} STREQUAL ${CMAKE_SOURCE_DIR})
     return()
   endif()
 
-  # message("")
-  # message("#")
-  # message("# Dependency graph:")
+  set(TPL_COUNT 0)
+  get_package_info(${CMAKE_CURRENT_SOURCE_DIR} TPL_COUNT MAIN_PACKAGE_NAME C D)
+
+  if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+    message("")
+    message("#")
+    message("# Dependency graph:")
+  endif()
   set(VISITED "")
   set(COMPONENTS "{}")
+  set(DEPENDENCIES "{}")
+  set(PCKG_PARENTS "{}")
   set(SRC_DIRS "")
-  set(TPL_COUNT 0)
-  get_dependency_graph(${CMAKE_CURRENT_SOURCE_DIR} VISITED SRC_DIRS COMPONENTS TPL_COUNT "" ON)
-  # message("#")
-  # message("")
+  get_dependency_graph(${CMAKE_CURRENT_SOURCE_DIR}
+    VISITED SRC_DIRS COMPONENTS DEPENDENCIES PCKG_PARENTS TPL_COUNT
+    "" "${MAIN_PACKAGE_NAME}" ON)
+  if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+    message("#")
+    message("")
+  endif()
+
+  show_package_list("${VISITED}" "${SRC_DIRS}" "${COMPONENTS}" "${DEPENDENCIES}")
 
   foreach(NAME SRC_DIR IN ZIP_LISTS VISITED SRC_DIRS)
     if(NOT "${SRC_DIR}" STREQUAL "${CMAKE_CURRENT_SOURCE_DIR}")
       set(PACKAGE_NAME ${NAME})
       string(JSON CS GET ${COMPONENTS} ${NAME})
       parse_component_set(${CS} PACKAGE_COMPONENTS)
-      # message(STATUS "Configuring pacakge ${NAME} from ${SRC_DIR} with components: ${PACKAGE_COMPONENTS}")
+      string(JSON DS GET ${DEPENDENCIES} ${NAME})
+      parse_component_set(${DS} PACKAGE_DEPENDENCIES)
+
+      make_package_info_line(MSG "${PACKAGE_NAME}" "${SRC_DIR}" "${PACKAGE_COMPONENTS}" "${PACKAGE_DEPENDENCIES}")
+      message(STATUS "-----------------------------------------------------------")
+      message(STATUS "Configuring package ${MSG}")
+      message(STATUS "")
+
       add_subdirectory("${SRC_DIR}" "${BIN_DIR}/${NAME}")
     endif()
   endforeach()
-  message(STATUS "Finished configuration of upstream packages")
 
-  # Fetch main package info (for consistency)
-  get_package_info(${CMAKE_CURRENT_SOURCE_DIR} TPL_COUNT NAME C D)
-  set(PACKAGE_NAME "${NAME}" PARENT_SCOPE)
+  # Set main package info (for consistency)
+  set(PACKAGE_NAME ${MAIN_PACKAGE_NAME})
   string(JSON CS GET ${COMPONENTS} ${NAME})
-  parse_component_set(${CS} MAIN_COMPONENTS)
-  set(PACKAGE_COMPONENTS "${MAIN_COMPONENTS}" PARENT_SCOPE)
-endfunction()
+  parse_component_set(${CS} PACKAGE_COMPONENTS)
+  string(JSON DS GET ${DEPENDENCIES} ${NAME})
+  parse_component_set(${DS} PACKAGE_DEPENDENCIES)
+  set(PACKAGE_NAME "${PACKAGE_NAME}" PARENT_SCOPE)
+  set(PACKAGE_COMPONENTS "${PACKAGE_COMPONENTS}" PARENT_SCOPE)
+  set(PACKAGE_DEPENDENCIES "${PACKAGE_DEPENDENCIES}" PARENT_SCOPE)
 
+  make_package_info_line(MSG "${PACKAGE_NAME}" "${SRC_DIR}" "${PACKAGE_COMPONENTS}" "${PACKAGE_DEPENDENCIES}")
+  message(STATUS "Finished configuration of upstream packages")
+  message(STATUS "-----------------------------------------------------------")
+  message(STATUS "Configuring package ${MSG}")
+  message(STATUS "")
+
+endfunction()
 #-----------------------------------------------------------------------#
 #
 # Visits packages recursively (going upstream from the main packages)
 #
 function(get_dependency_graph PCKG_SRC_DIR INOUT_VISITED_PACKAGES INOUT_PCKG_SRCDIRS
-                              INOUT_PCKG_COMPONENTS INOUT_TPL_COUNT PARENTS FORCE)
+                              INOUT_PCKG_COMPONENTS INOUT_PCKG_DEPENDENCIES INOUT_PCKG_PARENTS INOUT_TPL_COUNT
+                              PARENTS PACKAGE_NAME FORCE)
   set(VISITED_PACKAGES ${${INOUT_VISITED_PACKAGES}})
   set(PCKG_SRCDIRS ${${INOUT_PCKG_SRCDIRS}})
   set(PCKG_COMPONENTS ${${INOUT_PCKG_COMPONENTS}})
+  set(PCKG_DEPENDENCIES ${${INOUT_PCKG_DEPENDENCIES}})
+  set(PCKG_PARENTS ${${INOUT_PCKG_PARENTS}})
   set(TPL_COUNT ${${INOUT_TPL_COUNT}})
 
   # Fetch static package info (structure and dependencies)
@@ -58,62 +88,91 @@ function(get_dependency_graph PCKG_SRC_DIR INOUT_VISITED_PACKAGES INOUT_PCKG_SRC
 
   # Update components list
   add_components(PCKG_COMPONENTS ${NAME} "${ENABLED_COMPONENTS}" ACTIVE_COMPONENTS)
-  # if(ACTIVE_COMPONENTS STREQUAL "*")
-  #   message("#  Package ${NAME}") # all
-  # else()
-  #   message("#  Package ${NAME}: [${ACTIVE_COMPONENTS}]")
-  # endif()
-  # message("#\tvisited = [${VISITED_PACKAGES}]")
-  # message("#\tparents = [${PARENTS}]")
-  # message("#\tdependencies = [${ENABLED_DEPENDENCIES}]")
+  add_components(PCKG_DEPENDENCIES ${NAME} "${ENABLED_DEPENDENCIES}" ACTIVE_DEPENDENCIES)
 
   # Skip already visited packages
   # NOTE: this is executed after add_components() has chance
   #       to update component list and force revisit
   list(FIND VISITED_PACKAGES ${NAME} SKIP)
   if (FORCE OR SKIP EQUAL -1)
+
+    if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+      if(FORCE AND NOT SKIP EQUAL -1)
+        message("#  Package ${NAME} in ${PCKG_SRC_DIR} (forced)")
+      else()
+        message("#  Package ${NAME} in ${PCKG_SRC_DIR}")
+      endif()
+      message("#      parents = [${PARENTS}], visited = [${VISITED_PACKAGES}]")
+      message("#      components = [${ACTIVE_COMPONENTS}]")
+      message("#      dependencies = [${ACTIVE_DEPENDENCIES}]")
+    endif()
+
     # Add current package to visited
-    add_visited_package(VISITED_PACKAGES PCKG_SRCDIRS "${PARENTS}" ${NAME} ${PCKG_SRC_DIR})
+    add_visited_package(VISITED_PACKAGES PCKG_SRCDIRS ${PCKG_PARENTS} ${NAME} ${PCKG_SRC_DIR})
     list(APPEND PARENTS ${NAME}) # PARENTS = current stack of packages visited in depth-first order
     # Visit all enabled dependencies (recursively)
-    visit_active_dependencies(VISITED_PACKAGES PCKG_SRCDIRS PCKG_COMPONENTS "${PARENTS}"
-        "${COMPONENTS}" "${ACTIVE_COMPONENTS}" "${DEPENDENCIES}" "${ENABLED_DEPENDENCIES}")
-  # else()
-  #   message("#  (${NAME} already visited)")
+    visit_active_dependencies(
+        VISITED_PACKAGES PCKG_SRCDIRS PCKG_COMPONENTS PCKG_DEPENDENCIES PCKG_PARENTS
+        "${PARENTS}" "${NAME}"
+        "${COMPONENTS}" "${ACTIVE_COMPONENTS}"
+        "${DEPENDENCIES}" "${ACTIVE_DEPENDENCIES}")
+  else()
+    if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+      message("#  Skipping package ${NAME} (already visited)")
+    endif()
   endif()
 
   # Set output variables
   set(${INOUT_VISITED_PACKAGES} ${VISITED_PACKAGES} PARENT_SCOPE)
   set(${INOUT_PCKG_SRCDIRS} ${PCKG_SRCDIRS} PARENT_SCOPE)
   set(${INOUT_PCKG_COMPONENTS} ${PCKG_COMPONENTS} PARENT_SCOPE)
+  set(${INOUT_PCKG_DEPENDENCIES} ${PCKG_DEPENDENCIES} PARENT_SCOPE)
+  set(${INOUT_PCKG_PARENTS} ${PCKG_PARENTS} PARENT_SCOPE)
   set(${INOUT_TPL_COUNT} ${TPL_COUNT} PARENT_SCOPE)
 endfunction()
 
 #-----------------------------------------------------------------------#
 
 function(visit_active_dependencies INOUT_VISITED_PACKAGES INOUT_PCKG_SRCDIRS
-                                   INOUT_PCKG_COMPONENTS PARENTS COMPONENTS
-                                   ACTIVE_COMPONENTS DEPENDENCIES ACTIVE_DEPENDENCIES)
+                                   INOUT_PCKG_COMPONENTS INOUT_PCKG_DEPENDENCIES INOUT_PCKG_PARENTS
+                                   PARENTS PACKAGE_NAME
+                                   COMPONENTS ACTIVE_COMPONENTS
+                                   DEPENDENCIES ACTIVE_DEPENDENCIES)
 
   set(VISITED_PACKAGES ${${INOUT_VISITED_PACKAGES}})
   set(PCKG_SRCDIRS ${${INOUT_PCKG_SRCDIRS}})
   set(PCKG_COMPONENTS ${${INOUT_PCKG_COMPONENTS}})
+  set(PCKG_DEPENDENCIES ${${INOUT_PCKG_DEPENDENCIES}})
+  set(PCKG_PARENTS ${${INOUT_PCKG_PARENTS}})
   set(TPL_COUNT ${${INOUT_TPL_COUNT}})
 
   # Visit package dependencies
   string(JSON N LENGTH ${DEPENDENCIES})
   if(N GREATER 0)
+    if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+      message("#  Checking ${PACKAGE_NAME} package dependencies:")
+    endif()
     math(EXPR N "${N} - 1")
     foreach(I RANGE ${N})
       string(JSON DEP GET ${DEPENDENCIES} ${I})
-      visit_active_dependency(VISITED_PACKAGES PCKG_SRCDIRS PCKG_COMPONENTS TPL_COUNT
-          "${PARENTS}" "${ACTIVE_DEPENDENCIES}" ${DEP})
+      if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+        string(JSON DEP_NAME GET ${DEP} name)
+        message("#  ${PACKAGE_NAME} -> ${DEP_NAME} ?")
+      endif()
+      visit_active_dependency(
+          VISITED_PACKAGES PCKG_SRCDIRS
+          PCKG_COMPONENTS PCKG_DEPENDENCIES PCKG_PARENTS TPL_COUNT
+          "${PARENTS}" "${PACKAGE_NAME}"
+          "${ACTIVE_DEPENDENCIES}" ${DEP})
     endforeach()
   endif()
 
   # Visit component dependencies
   string(JSON N LENGTH ${COMPONENTS})
   if(N GREATER 0)
+    if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+      message("#  Checking ${PACKAGE_NAME} component dependencies:")
+    endif()
     math(EXPR N "${N} - 1")
     foreach(I RANGE ${N})
       # fetch component info
@@ -135,8 +194,20 @@ function(visit_active_dependencies INOUT_VISITED_PACKAGES INOUT_PCKG_SRCDIRS
         math(EXPR M "${M} - 1")
         foreach(I RANGE ${M})
           string(JSON DEP GET ${CDEPS} ${I})
-          visit_active_dependency(VISITED_PACKAGES PCKG_SRCDIRS PCKG_COMPONENTS TPL_COUNT
-              "${PARENTS}" "${ACTIVE_DEPENDENCIES}" ${DEP})
+          string(JSON DEP_NAME GET ${DEP} name)
+          if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+            message("#  ${PACKAGE_NAME}.${CNAME} -> ${DEP_NAME} ?")
+          endif()
+          visit_active_dependency(
+            VISITED_PACKAGES PCKG_SRCDIRS
+            PCKG_COMPONENTS PCKG_DEPENDENCIES
+            PCKG_PARENTS TPL_COUNT
+            "${PARENTS}" "${PACKAGE_NAME}"
+            "${ACTIVE_DEPENDENCIES}" ${DEP})
+          # Enable component dependency in package dependencies
+          if(NOT PACKAGE_NAME STREQUAL ${DEP_NAME})
+            add_components(PCKG_DEPENDENCIES ${PACKAGE_NAME} "${DEP_NAME}" UPDATED)
+          endif()
         endforeach()
       endif()
     endforeach()
@@ -146,24 +217,31 @@ function(visit_active_dependencies INOUT_VISITED_PACKAGES INOUT_PCKG_SRCDIRS
   set(${INOUT_VISITED_PACKAGES} ${VISITED_PACKAGES} PARENT_SCOPE)
   set(${INOUT_PCKG_SRCDIRS} ${PCKG_SRCDIRS} PARENT_SCOPE)
   set(${INOUT_PCKG_COMPONENTS} ${PCKG_COMPONENTS} PARENT_SCOPE)
+  set(${INOUT_PCKG_DEPENDENCIES} ${PCKG_DEPENDENCIES} PARENT_SCOPE)
+  set(${INOUT_PCKG_PARENTS} ${PCKG_PARENTS} PARENT_SCOPE)
   set(${INOUT_TPL_COUNT} ${TPL_COUNT} PARENT_SCOPE)
 endfunction()
 
 #-----------------------------------------------------------------------#
 
-function(visit_active_dependency INOUT_VISITED_PACKAGES INOUT_PCKG_SRCDIRS INOUT_PCKG_COMPONENTS INOUT_TPL_COUNT
-                                PARENTS ACTIVE_DEPENDENCIES DEPENDENCY)
+function(visit_active_dependency INOUT_VISITED_PACKAGES INOUT_PCKG_SRCDIRS
+                                 INOUT_PCKG_COMPONENTS INOUT_PCKG_DEPENDENCIES
+                                 INOUT_PCKG_PARENTS INOUT_TPL_COUNT
+                                 PARENTS PACKAGE_NAME ACTIVE_DEPENDENCIES DEPENDENCY)
   set(VISITED_PACKAGES ${${INOUT_VISITED_PACKAGES}})
   set(PCKG_SRCDIRS ${${INOUT_PCKG_SRCDIRS}})
   set(PCKG_COMPONENTS ${${INOUT_PCKG_COMPONENTS}})
+  set(PCKG_DEPENDENCIES ${${INOUT_PCKG_DEPENDENCIES}})
+  set(PCKG_PARENTS ${${INOUT_PCKG_PARENTS}})
   set(TPL_COUNT ${${INOUT_TPL_COUNT}})
 
   string(JSON DEP_NAME GET ${DEPENDENCY} name)
+  add_components(PCKG_PARENTS ${DEP_NAME} ${PACKAGE_NAME} UPDATED)
 
   # Determine component list (default to ALL required)
   string(JSON REQUIRED_COMPONENTS ERROR_VARIABLE JSON_ERR GET ${DEPENDENCY} components_required)
   if(NOT JSON_ERR STREQUAL "NOTFOUND")
-    set(REQUIRED_COMPONENTS "*")
+    set(REQUIRED_COMPONENTS "[]")
   endif()
   string(JSON OPTIONAL_COMPONENTS ERROR_VARIABLE JSON_ERR GET ${DEPENDENCY} components_optional)
   if(NOT JSON_ERR STREQUAL "NOTFOUND")
@@ -210,42 +288,72 @@ function(visit_active_dependency INOUT_VISITED_PACKAGES INOUT_PCKG_SRCDIRS INOUT
     endif()
   endif()
 
-  set(PREV ${DEP_COMPONENTS_LIST})
+  set(SKIP FALSE)
+
+  # Check if package needs to be revisited because of component list change
+  # NOTE: do it whenever package is skipped by this dependency - it can be required by some other
+  string(JSON PREV ERROR_VARIABLE JSON_ERR GET ${PCKG_COMPONENTS} ${DEP_NAME})
+  if(NOT JSON_ERR STREQUAL "NOTFOUND")
+    set(PREV "{}")
+  endif()
+  parse_component_set(${PREV} PREV)
   add_components(PCKG_COMPONENTS ${DEP_NAME} "${DEP_COMPONENTS_LIST}" UPDATED)
-  # message("#\t@-> ${DEP_NAME} components: [${DEP_COMPONENTS_LIST}] (all = [${UPDATED}])")
   set(FORCE OFF)
-  if(NOT PREV STREQUAL UPDATED)
-    list(FIND VISITED_PACKAGES ${DEP_NAME} INDEX)
-    if(INDEX GREATER -1)
-      # message("#  * Will revisit package ${DEP_NAME} (components updated)")
-      set(FORCE ON)
+  if(UPDATED)
+
+    # Revisit package if component set has changed
+    if(NOT PREV STREQUAL UPDATED)
+      list(FIND VISITED_PACKAGES ${DEP_NAME} INDEX)
+      if(INDEX GREATER -1)
+        if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+          message("#  Will revisit package ${DEP_NAME}, components updated")
+          message("#      from: [${PREV}]")
+          message("#      to:   [${UPDATED}]")
+        endif()
+        set(FORCE ON)
+      elseif(PREV)
+        message(FATAL_ERROR "Internal: unexpected components: [${PREV}]")
+      endif()
     endif()
+
+  else()
+    ## Skip packages with no required components
+    ## NOTE: package without components will still be visited with UPDATED="*"
+    ##if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+    ##  message("#  Skipping package ${DEP_NAME} (no components required)")
+    ##endif()
+    ##set(SKIP TRUE)
   endif()
 
   # Skip disabled optional dependencies
-  set(SKIP FALSE)
   string(JSON OPTIONAL ERROR_VARIABLE JSON_ERR GET ${DEP} optional)
   if((JSON_ERR STREQUAL "NOTFOUND") AND OPTIONAL)
     list(FIND ACTIVE_DEPENDENCIES ${DEP_NAME} INDEX)
     if(INDEX EQUAL -1)
-      # message("#  Skipping package ${DEP_NAME} (disabled optional dependency of ${NAME})")
+      if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+        message("#  Skipping package ${DEP_NAME} (disabled optional dependency of ${NAME})")
+      endif()
       set(SKIP TRUE)
     endif()
-  endif()
-  if(NOT UPDATED)
-    # message("#  Skipping package ${DEP_NAME} (no components required)")
-    set(SKIP TRUE)
   endif()
 
   # Visit upstream package
   if(NOT SKIP)
     string(JSON DEP_DIR GET ${DEP} source_dir)
-    get_dependency_graph(${DEP_DIR} VISITED_PACKAGES PCKG_SRCDIRS PCKG_COMPONENTS TPL_COUNT "${PARENTS}" ${FORCE})
+    if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+      message("#  ${PACKAGE_NAME} -> ${DEP_NAME}: [${UPDATED}]")
+    endif()
+    get_dependency_graph(
+      ${DEP_DIR}
+      VISITED_PACKAGES PCKG_SRCDIRS PCKG_COMPONENTS PCKG_DEPENDENCIES PCKG_PARENTS TPL_COUNT
+      "${PARENTS}" "${PACKAGE_NAME}" "${FORCE}")
   endif()
 
   set(${INOUT_VISITED_PACKAGES} ${VISITED_PACKAGES} PARENT_SCOPE)
   set(${INOUT_PCKG_SRCDIRS} ${PCKG_SRCDIRS} PARENT_SCOPE)
   set(${INOUT_PCKG_COMPONENTS} ${PCKG_COMPONENTS} PARENT_SCOPE)
+  set(${INOUT_PCKG_DEPENDENCIES} ${PCKG_DEPENDENCIES} PARENT_SCOPE)
+  set(${INOUT_PCKG_PARENTS} ${PCKG_PARENTS} PARENT_SCOPE)
   set(${INOUT_TPL_COUNT} ${TPL_COUNT} PARENT_SCOPE)
 endfunction()
 
@@ -272,7 +380,9 @@ function(get_package_info SRC_DIR INOUT_TPL_COUNT OUT_NAME OUT_COMPONENTS OUT_DE
   if(${ENTRY} STREQUAL "${ENTRY}-NOTFOUND")
     math(EXPR TPL_COUNT "${TPL_COUNT} + 1")
     set(NAME "__TPL${TPL_COUNT}")
-    # message("#  Found ${NAME} in ${SRC_DIR}")
+    if(DEPENDENCY_RESOLVER_DEBUG_SHOW_DIAGNOSTICS)
+      message("#  Found ${NAME} in ${SRC_DIR}")
+    endif()
     set(${OUT_NAME} ${NAME} PARENT_SCOPE)
     set(${OUT_COMPONENTS} "[]" PARENT_SCOPE)
     set(${OUT_DEPENDENCIES} "[]" PARENT_SCOPE)
@@ -284,7 +394,7 @@ function(get_package_info SRC_DIR INOUT_TPL_COUNT OUT_NAME OUT_COMPONENTS OUT_DE
   file(READ ${PATH} ROOT)
 
   # Get current package name
-  string(JSON NAME GET ${ROOT} name)
+  string(JSON NAME GET "${ROOT}" name)
   set(${OUT_NAME} ${NAME} PARENT_SCOPE)
 
   # Get components
@@ -332,27 +442,31 @@ endfunction()
 # keeping topological order based on PARENTS.
 #
 function(add_visited_package INOUT_VISITED_PACKAGES INOUT_PCKG_SRCDIRS
-                            PARENTS NAME SRC_DIR)
+                            PCKG_PARENTS NAME SRC_DIR)
   set(VISITED_PACKAGES ${${INOUT_VISITED_PACKAGES}})
   set(PCKG_SRCDIRS ${${INOUT_PCKG_SRCDIRS}})
+
+  # Fetch package parents
+  string(JSON PARENTS ERROR_VARIABLE JSON_ERR GET ${PCKG_PARENTS} ${NAME})
+  if(NOT JSON_ERR STREQUAL "NOTFOUND")
+    set(PARENTS "{}")
+  endif()
+  parse_component_set(${PARENTS} PARENTS)
 
   # Place package before all it's parents
   list(FIND VISITED_PACKAGES ${NAME} INDEX)
   if(INDEX GREATER -1)
     return() # already on the list (forced revisit)
   endif()
-  #message("\t>>> [${VISITED_PACKAGES}] += ${NAME} (parents = ${PARENTS})")
   list(LENGTH VISITED_PACKAGES INDEX)
   foreach(P IN LISTS PARENTS)
     list(FIND VISITED_PACKAGES ${P} I)
     if(NOT I EQUAL -1 AND I LESS INDEX)
       set(INDEX ${I})
-      #message("\t> ${P}: ${I}")
     endif()
   endforeach()
   list(INSERT VISITED_PACKAGES ${INDEX} ${NAME})
   list(INSERT PCKG_SRCDIRS ${INDEX} ${SRC_DIR})
-  #message("\t>> ${INDEX} -> ${VISITED_PACKAGES} | ${PCKG_SRCDIRS}")
 
   # Set outputs
   set(${INOUT_VISITED_PACKAGES} ${VISITED_PACKAGES} PARENT_SCOPE)
@@ -399,6 +513,9 @@ function(add_components INOUT_PCKG_COMPONENTS DEP_NAME NEW_COMPONENTS OUT_COMPON
   set(PCKG_COMPONENTS ${${INOUT_PCKG_COMPONENTS}})
   set(COMPONENTS "")
 
+  # message(=============================== Before)
+  # message(${PCKG_COMPONENTS})
+
   if(NEW_COMPONENTS STREQUAL "*") # all components
     set(UNION "\"*\"")
     set(COMPONENTS "*")
@@ -424,21 +541,53 @@ function(add_components INOUT_PCKG_COMPONENTS DEP_NAME NEW_COMPONENTS OUT_COMPON
       string(JSON PCKG_COMPONENTS SET ${PCKG_COMPONENTS} ${DEP_NAME} ${UNION})
 
       # Fetch updated components as plain list
-      set(COMPONENTS "")
-      string(JSON N LENGTH ${UNION})
-      if(N GREATER 0)
-        math(EXPR N "${N} - 1")
-        foreach(I RANGE ${N})
-          string(JSON CNAME MEMBER ${UNION} ${I})
-          list(APPEND COMPONENTS ${CNAME})
-        endforeach()
-      endif()
+      parse_component_set(${UNION} COMPONENTS)
 
     endif()
   endif()
 
+  # message(=============================== After:)
+  # message(${PCKG_COMPONENTS})
+  # message(===============================)
+
   set(${INOUT_PCKG_COMPONENTS} ${PCKG_COMPONENTS} PARENT_SCOPE)
   set(${OUT_COMPONENTS} ${COMPONENTS} PARENT_SCOPE)
+endfunction()
+
+#-----------------------------------------------------------------------#
+
+function(show_package_list VISITED SRC_DIRS COMPONENTS DEPENDENCIES)
+  message("")
+  message(STATUS "")
+  message(STATUS "Configuring packages:")
+  foreach(NAME SRC_DIR IN ZIP_LISTS VISITED SRC_DIRS)
+    set(PACKAGE_NAME ${NAME})
+    string(JSON CS GET ${COMPONENTS} ${NAME})
+    parse_component_set(${CS} PACKAGE_COMPONENTS)
+    string(JSON DS GET ${DEPENDENCIES} ${NAME})
+    parse_component_set(${DS} PACKAGE_DEPENDENCIES)
+    make_package_info_line(MSG "${NAME}" "${SRC_DIR}" "${PACKAGE_COMPONENTS}" "${PACKAGE_DEPENDENCIES}")
+    message(STATUS " - ${MSG}")
+  endforeach()
+  message(STATUS "")
+  message("")
+endfunction()
+
+function(make_package_info_line LINE NAME SRC_DIR PACKAGE_COMPONENTS PACKAGE_DEPENDENCIES)
+  set(MSG "${NAME} (from ${SRC_DIR})")
+  if(PACKAGE_COMPONENTS STREQUAL "*")
+    string(APPEND MSG "\n      components: ALL")
+  elseif(PACKAGE_COMPONENTS STREQUAL "")
+    #string(APPEND MSG "\n      components: ---")
+  else()
+    string(APPEND MSG "\n      components: ${PACKAGE_COMPONENTS}")
+  endif()
+  if(PACKAGE_DEPENDENCIES)
+    string(APPEND MSG "\n      dependencies: ${PACKAGE_DEPENDENCIES}")
+  else()
+    #string(APPEND MSG "\n      dependencies: ---")
+  endif()
+  set(${LINE} ${MSG} PARENT_SCOPE)
 endfunction()
 
 #-----------------------------------------------------------------------#
